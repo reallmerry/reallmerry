@@ -1,6 +1,6 @@
 - 👋 Hi, I’m @reallmerry
 - 👀 I’m interested in programmist
-- 🌱 I’m currently learning C#
+- 🌱 I’m currently learning C# (no)
 - 📫 How to reach me discord reallmerry_
 - 😄 Pronouns: Merry
 - ⚡ Fun fact: fun
