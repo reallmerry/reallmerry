@@ -1,8 +1,8 @@
 - 👋 Hi, I’m @reallmerry
-- 👀 I’m interested in ...
-- 🌱 I’m currently learning ...
+- 👀 I’m interested in Blockbench, Aseprite
+- 🌱 I’m currently learning 3d models, 2d priting
 - 📫 How to reach me discord reallmerry.
-- 😄 Pronouns: Merry
+- 😄 Pronouns: Merry, krid
 - ⚡ Fun fact: fun
 
 <!---
