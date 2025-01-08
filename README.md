@@ -1,3 +1,8 @@
+
+<a href="#">
+  <img src="https://github-readme-stats.vercel.app/api?username=reallmerry&show_icons=true&hide_border=true" align="right" alt="reallmerry's Github Stats" />
+</a>
+
 - 👋 Hi, I’m @reallmerry
 - 👀 I’m interested in Blockbench, Aseprite
 - 🌱 I’m currently learning 3d models, 2d priting, java language
