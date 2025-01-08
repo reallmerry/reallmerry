@@ -1,6 +1,6 @@
 - 👋 Hi, I’m @reallmerry
 - 👀 I’m interested in Blockbench, Aseprite
-- 🌱 I’m currently learning 3d models, 2d priting
+- 🌱 I’m currently learning 3d models, 2d priting, java language
 - 📫 How to reach me discord reallmerry.
 - 😄 Pronouns: Merry, krid
 - ⚡ Fun fact: fun
