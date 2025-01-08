@@ -12,7 +12,7 @@
 
 # Tech tree
 
-[![Tech Tree](https://skillicons.dev/icons?i=ts,python,react,vue,tauri,tailwind,blender)](https://skillicons.dev)
+[![Tech Tree](https://skillicons.dev/icons?i=java,html,css,discord,blockbench,blender,figma)](https://skillicons.dev)
 
 <div>
     <img src="https://github-readme-stats.vercel.app/api/top-langs/?username=reallmerry&layout=compact" align="left" alt="reallmerry Github Stats" />
