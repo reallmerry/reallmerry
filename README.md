@@ -10,6 +10,14 @@
 - 😄 Pronouns: Merry, krid
 - ⚡ Fun fact: fun
 
+# Tech tree
+
+[![Tech Tree](https://skillicons.dev/icons?i=ts,python,react,vue,tauri,tailwind,blender)](https://skillicons.dev)
+
+<div>
+    <img src="https://github-readme-stats.vercel.app/api/top-langs/?username=reallmerry&layout=compact" align="left" alt="reallmerry Github Stats" />
+</div>
+
 <!---
 reallmerry/reallmerry is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 You can click the Preview link to take a look at your changes.
