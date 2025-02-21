@@ -10,7 +10,9 @@
 - 😄 Pronouns: Merry, krid
 - ⚡ Fun fact: fun
 
-https://dev.discordprofiles.me/openspotify/1175891844626907329
+<div>
+    <img src="https://dev.discordprofiles.me/openspotify/1175891844626907329" align="left" alt="reallmerry Github Stats" />
+</div>
 
 # Tech tree
 
