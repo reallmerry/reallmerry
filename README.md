@@ -13,7 +13,7 @@
   <br>
   
   <a href="https://discord.com/users/gum.ogg">
-    <img src="https://img.shields.io/badge/Discord-reallmerry-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord" />
+    <img src="https://img.shields.io/badge/Discord-gum.ogg-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord" />
   </a>
   <a href="https://t.me/gummp3">
     <img src="https://img.shields.io/badge/Telegram-Contact-26A5E4?style=flat&logo=telegram" alt="Telegram" />
