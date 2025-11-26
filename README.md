@@ -3,6 +3,8 @@
   <img src="https://github-readme-stats.vercel.app/api?username=reallmerry&show_icons=true&hide_border=true" align="right" alt="reallmerry's Github Stats" />
 </a>
 
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&pause=1000&color=F75B3C&width=435&lines=Java+Fullstack+Engineer;Platform+Development+Architect;Project+Infrastructure+Lead;rStudio+Founder;Web+Solutions+Engineer)](https://git.io/typing-svg)
+
 - 👋 Hi, I’m @reallmerry
 - 👀 I’m interested in Blockbench, Aseprite
 - 🌱 I’m currently learning 3d models, 2d priting, java language
