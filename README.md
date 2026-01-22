@@ -83,5 +83,6 @@
 <br>
 
 <div align="center">
-  <p style="color: #64748b; font-style: italic; font-size: 0.9em;">☽ Crafting digital experiences since 2023 • rStudio © 2025</p>
+  <p style="color: #64748b; font-style: italic; font-size: 0.9em;">☽ rStudio © 2026</p>
+  
 </div>
