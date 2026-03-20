@@ -10,7 +10,7 @@
 
 <div align="center">
   
-[![Discord Presence](https://lanyard.cnrad.dev/api/:id)](https://discord.com/users/:id)
+[![Discord Presence](https://lanyard.cnrad.dev/api/1444070810045120574)](https://discord.com/users/1444070810045120574)
 
 <a href="https://t.me/gummp3">
   <img src="https://img.shields.io/badge/Telegram-Contact-26A5E4?style=flat&logo=telegram" alt="Telegram" />
