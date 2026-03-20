@@ -12,9 +12,7 @@
   
 [![Discord Presence](https://lanyard.cnrad.dev/api/1444070810045120574)](https://discord.com/users/1444070810045120574)
 
-<a href="https://t.me/gummp3">
 <a href="https://t.me/gummp4"> <img src="https://img.shields.io/badge/Telegram-Contact-26A5E4?style=for-the-badge&logo=telegram" alt="Telegram" /> 
 </a>
-![Static Badge](https://img.shields.io/badge/discord?style=for-the-badge&link=1)
 
 </div>
