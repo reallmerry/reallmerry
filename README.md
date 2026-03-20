@@ -15,5 +15,6 @@
 <a href="https://t.me/gummp3">
 <a href="https://t.me/gummp4"> <img src="https://img.shields.io/badge/Telegram-Contact-26A5E4?style=for-the-badge&logo=telegram" alt="Telegram" /> 
 </a>
+![Static Badge](https://img.shields.io/badge/discord?style=for-the-badge&link=1)
 
 </div>
