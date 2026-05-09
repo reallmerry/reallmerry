@@ -1,0 +1,1785 @@
+package io.reallmerry.rstudio.loader.api;
+
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * Публичный API скупщика для интеграции с другими плагинами.
+ *
+ * Использование:
+ *   var rsp = server.getServicesManager().getRegistration(BuyerApi.class);
+ *   if (rsp != null) rsp.getProvider().addMultiplier(...);
+ */
+public interface BuyerApi {
+
+    /**
+     * Добавить множитель игроку из внешнего плагина.
+     * @param source  уникальная строка-идентификатор источника (напр. "myPlugin:event")
+     * @param value   значение бонуса (0.1 = +10%)
+     * @param until   срок действия, null = бессрочно
+     */
+    void addMultiplier(UUID playerUuid, String source, double value, Instant until);
+
+    /** Удалить множитель по идентификатору источника */
+    void removeMultiplier(UUID playerUuid, String source);
+
+    /** Суммарный доп. множитель игрока (без базового rank-множителя) */
+    double totalExtraMultiplier(UUID playerUuid);
+
+    /** Текущее количество очков скупщика */
+    long points(UUID playerUuid);
+
+    /** Начислить очки (например как награду за квест) */
+    void addPoints(UUID playerUuid, long amount);
+
+    /** Снять очки. Возвращает false если недостаточно баланса */
+    boolean withdrawPoints(UUID playerUuid, long amount);
+}
+
+package io.reallmerry.rstudio.loader.api;
+
+import io.reallmerry.rstudio.loader.core.MultiplierService;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public final class BuyerApiImpl implements BuyerApi {
+
+    private final MultiplierService multiplierService;
+    private final PlayerCache       playerCache;
+
+    public BuyerApiImpl(MultiplierService multiplierService, PlayerCache playerCache) {
+        this.multiplierService = multiplierService;
+        this.playerCache       = playerCache;
+    }
+
+    @Override
+    public void addMultiplier(UUID uuid, String source, double value, Instant until) {
+        multiplierService.add(uuid, source, value, until);
+    }
+
+    @Override
+    public void removeMultiplier(UUID uuid, String source) {
+        multiplierService.remove(uuid, source);
+    }
+
+    @Override
+    public double totalExtraMultiplier(UUID uuid) {
+        return multiplierService.totalExtra(uuid);
+    }
+
+    @Override
+    public long points(UUID uuid) {
+        var data = playerCache.get(uuid);
+        return data != null ? data.points() : 0L;
+    }
+
+    @Override
+    public void addPoints(UUID uuid, long amount) {
+        var data = playerCache.get(uuid);
+        if (data == null) return;
+        data.addPoints(amount);
+        playerCache.markDirty(uuid);
+    }
+
+    @Override
+    public boolean withdrawPoints(UUID uuid, long amount) {
+        var data = playerCache.get(uuid);
+        if (data == null || data.points() < amount) return false;
+        data.addPoints(-amount);
+        playerCache.markDirty(uuid);
+        return true;
+    }
+}
+
+package io.reallmerry.rstudio.loader.command;
+
+import io.reallmerry.rstudio.loader.config.ItemRegistry;
+import io.reallmerry.rstudio.loader.core.*;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.gui.*;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.command.*;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.util.List;
+
+public final class Buyer implements CommandExecutor, TabCompleter {
+
+    private final SellService           sellService;
+    private final AutoSellService       autoSellService;
+    private final ShopService           shopService;
+    private final MultiplierService     multiplierService;
+    private final RankMultiplierProvider rankProvider;
+    private final ItemRegistry          itemRegistry;
+    private final PlayerCache           playerCache;
+    private final GuiFactory            factory;
+    private final JavaPlugin            plugin;
+    private final MiniMessage           mm = MiniMessage.miniMessage();
+
+    public Buyer(SellService sellService, AutoSellService autoSellService, ShopService shopService,
+                 MultiplierService multiplierService, RankMultiplierProvider rankProvider,
+                 ItemRegistry itemRegistry, PlayerCache playerCache, GuiFactory factory, JavaPlugin plugin) {
+        this.sellService       = sellService;
+        this.autoSellService   = autoSellService;
+        this.shopService       = shopService;
+        this.multiplierService = multiplierService;
+        this.rankProvider      = rankProvider;
+        this.itemRegistry      = itemRegistry;
+        this.playerCache       = playerCache;
+        this.factory           = factory;
+        this.plugin            = plugin;
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("Только для игроков");
+            return true;
+        }
+        if (!player.hasPermission("buyer.use")) {
+            player.sendMessage(mm.deserialize("<red>Нет доступа к скупщику"));
+            return true;
+        }
+
+        var sub = args.length == 0 ? "" : args[0].toLowerCase();
+        switch (sub) {
+            case ""          -> new MainGui(sellService, playerCache, rankProvider, multiplierService, factory).open(player);
+            case "auto"     -> new AutoSellGui(autoSellService, itemRegistry, playerCache, factory).open(player);
+            case "items"    -> new ItemsGui(itemRegistry, factory).open(player);
+            case "settings" -> new SettingsGui(playerCache, factory).open(player);
+            case "shop"     -> new ShopGui(shopService, playerCache, factory).open(player);
+            case "reload"   -> {
+                if (!player.hasPermission("buyer.admin")) {
+                    player.sendMessage(mm.deserialize("<red>Нет прав"));
+                    return true;
+                }
+                plugin.reloadConfig();
+                player.sendMessage(mm.deserialize("<green>Конфиг перезагружен"));
+            }
+            default -> player.sendMessage(mm.deserialize("<red>/b [auto|items|settings|shop|reload]"));
+        }
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
+        if (args.length != 1) return List.of();
+        return List.of("auto", "items", "settings", "shop", "reload").stream()
+                .filter(s -> s.startsWith(args[0].toLowerCase()))
+                .toList();
+    }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+import org.spongepowered.configurate.objectmapping.meta.Setting;
+
+@ConfigSerializable
+public final class CoefficientConfig {
+
+    @Setting("min-coefficient")
+    private double minCoefficient = 0.3;
+
+    @Setting("decay-base")
+    private double decayBase = 0.0001;
+
+    @Setting("reset-cron")
+    private String resetCron = "0 0 * * *";
+
+    public double minCoefficient() { return minCoefficient; }
+    public double decayBase()      { return decayBase; }
+    public String resetCron()      { return resetCron; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+
+@ConfigSerializable
+public final class DatabaseConfig {
+    private String host     = "127.0.0.1";
+    private int    port     = 3306;
+    private String database = "rstudio_buyer";
+    private String username = "root";
+    private String password = "changeme";
+
+    public String host()     { return host; }
+    public int    port()     { return port; }
+    public String database() { return database; }
+    public String username() { return username; }
+    public String password() { return password; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import io.reallmerry.rstudio.loader.domain.BuyerItem;
+import io.reallmerry.rstudio.loader.domain.ItemCategory;
+import org.bukkit.Material;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+
+import java.io.IOException;
+import java.util.*;
+
+public final class ItemRegistry {
+
+    private final Map<Material, BuyerItem> items;
+
+    private ItemRegistry(Map<Material, BuyerItem> items) {
+        this.items = Collections.unmodifiableMap(items);
+    }
+
+    public static ItemRegistry load(JavaPlugin plugin, Map<Material, String> translations) {
+        plugin.saveResource("items.yml", false);
+        var file = plugin.getDataFolder().toPath().resolve("items.yml");
+        try {
+            var loader = YamlConfigurationLoader.builder().path(file).build();
+            var root   = loader.load();
+            var result = new EnumMap<Material, BuyerItem>(Material.class);
+
+            var categories = root.node("categories");
+            for (var categoryEntry : categories.childrenMap().entrySet()) {
+                var categoryKey = categoryEntry.getKey().toString();
+                var category    = ItemCategory.valueOf(categoryKey);
+                var itemsNode   = categoryEntry.getValue().node("items");
+
+                for (var itemEntry : itemsNode.childrenMap().entrySet()) {
+                    var materialName = itemEntry.getKey().toString();
+                    var material     = Material.matchMaterial(materialName);
+                    if (material == null) {
+                        plugin.getLogger().warning("items.yml: unknown material: " + materialName);
+                        continue;
+                    }
+                    double price       = itemEntry.getValue().node("price").getDouble(1.0);
+                    String displayName = translations.getOrDefault(material, material.name());
+                    result.put(material, new BuyerItem(material, displayName, price, category));
+                }
+            }
+            return new ItemRegistry(result);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load items.yml", e);
+        }
+    }
+
+    public Optional<BuyerItem> find(Material material) {
+        return Optional.ofNullable(items.get(material));
+    }
+
+    public Collection<BuyerItem> all() {
+        return items.values();
+    }
+
+    public List<BuyerItem> byCategory(ItemCategory category) {
+        return items.values().stream()
+                .filter(i -> i.category() == category)
+                .toList();
+    }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+import org.spongepowered.configurate.objectmapping.meta.Setting;
+
+import java.util.List;
+
+@ConfigSerializable
+public final class PluginConfig {
+
+    @Setting("server-id")
+    private String serverId = "anarchy-1";
+
+    @Setting("flush-interval-ticks")
+    private long flushIntervalTicks = 6000L;
+
+    @Setting("category-bonus")
+    private double categoryBonus = 0.05;
+
+    private DatabaseConfig database = new DatabaseConfig();
+    private RedisConfig    redis    = new RedisConfig();
+    private CoefficientConfig coefficient = new CoefficientConfig();
+    private ShopConfig     shop     = new ShopConfig();
+
+    @Setting("ranks")
+    private List<RankConfig> ranks = List.of(
+            new RankConfig("buyer.rank.eternity", 1.5, false),
+            new RankConfig("buyer.rank.stinger",  1.3, true),
+            new RankConfig("buyer.rank.premium",  1.2, false),
+            new RankConfig("buyer.rank.vip",     1.1, false),
+            new RankConfig("buyer.rank.default", 1.0, false)
+    );
+
+    public String          serverId()         { return serverId; }
+    public long            flushIntervalTicks(){ return flushIntervalTicks; }
+    public double          categoryBonus()    { return categoryBonus; }
+    public DatabaseConfig  database()         { return database; }
+    public RedisConfig     redis()            { return redis; }
+    public CoefficientConfig coefficient()   { return coefficient; }
+    public ShopConfig      shop()             { return shop; }
+    public List<RankConfig> ranks()          { return ranks; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+import org.spongepowered.configurate.objectmapping.meta.Setting;
+
+@ConfigSerializable
+public final class RankConfig {
+
+    private String  permission;
+    private double  multiplier;
+
+    // true у Stinger — прирост rankGrowth x2 (+0.02 вместо +0.01)
+    @Setting("double-rank-growth")
+    private boolean doubleRankGrowth;
+
+    public RankConfig() {}
+
+    public RankConfig(String permission, double multiplier, boolean doubleRankGrowth) {
+        this.permission       = permission;
+        this.multiplier       = multiplier;
+        this.doubleRankGrowth = doubleRankGrowth;
+    }
+
+    public String  permission()       { return permission; }
+    public double  multiplier()        { return multiplier; }
+    public boolean doubleRankGrowth() { return doubleRankGrowth; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+
+@ConfigSerializable
+public final class RedisConfig {
+    private String uri = "redis://127.0.0.1:6379/0";
+
+    public String uri() { return uri; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+import org.spongepowered.configurate.objectmapping.ConfigSerializable;
+import org.spongepowered.configurate.objectmapping.meta.Setting;
+
+@ConfigSerializable
+public final class ShopConfig {
+
+    @Setting("unlock-delay-hours")
+    private int unlockDelayHours = 24;
+
+    @Setting("rotating-slots")
+    private int rotatingSlots = 12;
+
+    @Setting("ulta-multiplier")
+    private double ultaMultiplier = 0.1;
+
+    @Setting("ulta-duration-minutes")
+    private int ultaDurationMinutes = 60;
+
+    @Setting("ulta-base-price")
+    private long ultaBasePrice = 14999L;
+
+    @Setting("ulta-price-scale")
+    private double ultaPriceScale = 1.5;
+
+    public int    unlockDelayHours()   { return unlockDelayHours; }
+    public int    rotatingSlots()      { return rotatingSlots; }
+    public double ultaMultiplier()     { return ultaMultiplier; }
+    public int    ultaDurationMinutes(){ return ultaDurationMinutes; }
+    public long   ultaBasePrice()      { return ultaBasePrice; }
+    public double ultaPriceScale()     { return ultaPriceScale; }
+}
+
+package io.reallmerry.rstudio.loader.config;
+
+public class ShopItemConfig {
+}
+
+
+package io.reallmerry.rstudio.loader.core;
+
+import io.reallmerry.rstudio.loader.config.ItemRegistry;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.domain.SellResult;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+public final class AutoSellService {
+
+    private final SellService   sellService;
+    private final ItemRegistry  itemRegistry;
+    private final PlayerCache   playerCache;
+    // Настроенные для продажи предметы игрока (null = продавать всё из реестра)
+    private final ConcurrentHashMap<UUID, Set<Material>> filters = new ConcurrentHashMap<>();
+
+    public AutoSellService(SellService sellService, ItemRegistry itemRegistry, PlayerCache playerCache) {
+        this.sellService  = sellService;
+        this.itemRegistry = itemRegistry;
+        this.playerCache  = playerCache;
+    }
+
+    public boolean canSell(Player player, Material material) {
+        var data = playerCache.get(player.getUniqueId());
+        if (data == null) return false;
+        if (itemRegistry.find(material).isEmpty()) return false;
+        var filter = filters.get(player.getUniqueId());
+        return filter == null || filter.contains(material);
+    }
+
+    public SellResult quickSell(Player player, ItemStack item) {
+        return sellService.sell(player, List.of(item));
+    }
+
+    public void toggleFilter(UUID uuid, Material material) {
+        var filter = filters.computeIfAbsent(uuid, u -> ConcurrentHashMap.newKeySet());
+        if (!filter.remove(material)) filter.add(material);
+    }
+
+    public void enableAll(UUID uuid) { filters.remove(uuid); }
+
+    public void disableAll(UUID uuid) { filters.put(uuid, ConcurrentHashMap.newKeySet()); }
+
+    public Set<Material> activeFilter(UUID uuid) { return filters.getOrDefault(uuid, Set.of()); }
+}
+
+package io.reallmerry.rstudio.loader.core;
+
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.reallmerry.rstudio.loader.config.CoefficientConfig;
+
+/**
+ * Формула: coeff = max(minCoeff, 1.0 / (1.0 + decayBase * sellCount))
+ * sellCount = 0  → coeff = 1.0 (полная цена)
+ * sellCount → ∞  → coeff → minCoeff
+ */
+public final class CoefficientEngine {
+
+    private static final String PREFIX = "buyer:sellcount:";
+
+    private final StatefulRedisConnection<String, String> redis;
+    private final CoefficientConfig                       cfg;
+
+    public CoefficientEngine(StatefulRedisConnection<String, String> redis, CoefficientConfig cfg) {
+        this.redis = redis;
+        this.cfg   = cfg;
+    }
+
+    public double coefficient(String materialName) {
+        var raw      = redis.sync().get(PREFIX + materialName);
+        long count   = raw != null ? Long.parseLong(raw) : 0L;
+        return Math.max(cfg.minCoefficient(), 1.0 / (1.0 + cfg.decayBase() * count));
+    }
+
+    // Вызывается из SyncService при получении SELL_STAT от другого сервера
+    public void updateFromSync(String materialName, long count) {
+        redis.async().set(PREFIX + materialName, String.valueOf(count));
+    }
+
+    public void resetAll() {
+        var keys = redis.sync().keys(PREFIX + "*");
+        if (!keys.isEmpty()) redis.async().del(keys.toArray(String[]::new));
+    }
+}
+
+package io.reallmerry.rstudio.loader.core;
+
+import io.reallmerry.rstudio.loader.data.MultiplierRepository;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.domain.MultiplierEntry;
+
+import java.sql.SQLException;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import java.util.logging.Logger;
+
+public final class MultiplierService {
+
+    private static final Logger LOG = Logger.getLogger("RStudioBuyer");
+
+    private final MultiplierRepository repo;
+    private final PlayerCache          cache;
+
+    public MultiplierService(MultiplierRepository repo, PlayerCache cache) {
+        this.repo  = repo;
+        this.cache = cache;
+    }
+
+    public double totalExtra(UUID uuid) {
+        return active(uuid).stream().mapToDouble(MultiplierEntry::value).sum();
+    }
+
+    public List<MultiplierEntry> active(UUID uuid) {
+        return cache.multipliers(uuid).stream()
+                .filter(e -> e.expiresAt() == null || e.expiresAt().isAfter(Instant.now()))
+                .toList();
+    }
+
+    public void add(UUID uuid, String source, double value, Instant expiresAt) {
+        var entry = new MultiplierEntry(uuid, source, value, expiresAt);
+        try {
+            repo.save(entry);
+        } catch (SQLException e) {
+            LOG.severe("Failed to persist multiplier for " + uuid + ": " + e.getMessage());
+        }
+        cache.addMultiplier(uuid, entry);
+    }
+
+    public void remove(UUID uuid, String source) {
+        try {
+            repo.delete(uuid, source);
+        } catch (SQLException e) {
+            LOG.severe("Failed to delete multiplier for " + uuid + ": " + e.getMessage());
+        }
+        cache.removeMultiplier(uuid, source);
+    }
+}
+package io.reallmerry.rstudio.loader.core;
+
+import io.reallmerry.rstudio.loader.config.RankConfig;
+import org.bukkit.entity.Player;
+
+import java.util.Comparator;
+import java.util.List;
+
+/**
+ * Возвращает базовый множитель из конфига на основе Permission-нод игрока.
+ * Берётся наивысший множитель среди всех прав которые есть у игрока.
+ */
+public final class RankMultiplierProvider {
+
+    private final List<RankConfig> ranks;
+
+    public RankMultiplierProvider(List<RankConfig> ranks) {
+        this.ranks = ranks.stream()
+                .sorted(Comparator.comparingDouble(RankConfig::multiplier).reversed())
+                .toList();
+    }
+
+    public double multiplierFor(Player player) {
+        return ranks.stream()
+                .filter(r -> player.hasPermission(r.permission()))
+                .mapToDouble(RankConfig::multiplier)
+                .findFirst()
+                .orElse(1.0);
+    }
+
+    public double rankGrowthStep(Player player) {
+        return ranks.stream()
+                .filter(r -> player.hasPermission(r.permission()))
+                .findFirst()
+                .map(r -> r.doubleRankGrowth() ? 0.02 : 0.01)
+                .orElse(0.01);
+    }
+}
+
+package io.reallmerry.rstudio.loader.core;
+
+import io.reallmerry.rstudio.loader.config.ItemRegistry;
+import io.reallmerry.rstudio.loader.config.PluginConfig;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.data.PlayerRepository;
+import io.reallmerry.rstudio.loader.data.SellStatRepository;
+import io.reallmerry.rstudio.loader.domain.ItemCategory;
+import io.reallmerry.rstudio.loader.domain.SellResult;
+import io.lettuce.core.api.StatefulRedisConnection;
+import net.milkbowl.vault.economy.Economy;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.EnumMap;
+import java.util.List;
+
+public final class SellService {
+
+    private final Economy                               economy;
+    private final ItemRegistry                          itemRegistry;
+    private final PlayerCache                           playerCache;
+    private final SellStatRepository                    sellStatRepo;
+    private final StatefulRedisConnection<String, String> redis;
+    private final CoefficientEngine                     coeffEngine;
+    private final RankMultiplierProvider                rankProvider;
+    private final MultiplierService                     multiplierService;
+    private final SyncService                           syncService;
+    private final PluginConfig                          cfg;
+
+    public SellService(Economy economy, ItemRegistry itemRegistry, PlayerCache playerCache,
+                       SellStatRepository sellStatRepo, StatefulRedisConnection<String, String> redis,
+                       CoefficientEngine coeffEngine, RankMultiplierProvider rankProvider,
+                       MultiplierService multiplierService, SyncService syncService, PluginConfig cfg) {
+        this.economy           = economy;
+        this.itemRegistry      = itemRegistry;
+        this.playerCache       = playerCache;
+        this.sellStatRepo      = sellStatRepo;
+        this.redis             = redis;
+        this.coeffEngine       = coeffEngine;
+        this.rankProvider      = rankProvider;
+        this.multiplierService = multiplierService;
+        this.syncService       = syncService;
+        this.cfg               = cfg;
+    }
+
+    // Вызывается только на main thread (Economy требует этого)
+    public SellResult sell(Player player, List<ItemStack> items) {
+        var data           = playerCache.get(player.getUniqueId());
+        double baseMulti   = rankProvider.multiplierFor(player);
+        double extraMulti  = multiplierService.totalExtra(player.getUniqueId());
+        double catBonus    = cfg.categoryBonus();
+
+        double totalMoney  = 0;
+        long   totalPoints = 0;
+        var    sold        = new EnumMap<ItemCategory, Long>(ItemCategory.class);
+
+        for (var item : items) {
+            var opt = itemRegistry.find(item.getType());
+            if (opt.isEmpty()) continue;
+            var bi = opt.get();
+
+            double coeff = coeffEngine.coefficient(bi.material().name());
+            double price = bi.basePrice() * item.getAmount()
+                    * baseMulti * (1.0 + extraMulti) * coeff;
+            if (bi.category() == data.topCategory()) price *= (1.0 + catBonus);
+
+            long points = (long) (bi.basePrice() * item.getAmount() * coeff);
+            totalMoney  += price;
+            totalPoints += points;
+            sold.merge(bi.category(), (long) item.getAmount(), Long::sum);
+
+            sellStatRepo.increment(redis, bi.material().name());
+            syncService.publishSellStat(bi.material().name());
+        }
+
+        if (totalMoney <= 0) return SellResult.empty();
+
+        economy.depositPlayer(player, totalMoney);
+        data.addPoints(totalPoints);
+        data.addCategoryPoints(sold);
+        playerCache.markDirty(player.getUniqueId());
+
+        return new SellResult(totalMoney, totalPoints, sold);
+    }
+}
+
+package io.reallmerry.rstudio.loader.core;
+
+import io.reallmerry.rstudio.loader.config.ShopConfig;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.data.PlayerRepository;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public final class ShopService {
+
+    private final PlayerRepository playerRepo;
+    private final PlayerCache      playerCache;
+    private final MultiplierService multiplierService;
+    private final SyncService       syncService;
+    private final ShopConfig        cfg;
+
+    public ShopService(PlayerRepository playerRepo, PlayerCache playerCache,
+                       MultiplierService multiplierService, SyncService syncService, ShopConfig cfg) {
+        this.playerRepo        = playerRepo;
+        this.playerCache       = playerCache;
+        this.multiplierService = multiplierService;
+        this.syncService       = syncService;
+        this.cfg               = cfg;
+    }
+
+    // Возвращает true если покупка прошла (достаточно очков)
+    public boolean buyUlta(UUID uuid) {
+        var data      = playerCache.get(uuid);
+        long price    = currentUltaPrice(uuid);
+        if (data.points() < price) return false;
+
+        data.addPoints(-price);
+        playerCache.markDirty(uuid);
+        multiplierService.add(uuid, "ulta", cfg.ultaMultiplier(),
+                Instant.now().plusSeconds(cfg.ultaDurationMinutes() * 60L));
+        syncService.publishMultiplierUpdate(uuid.toString(), multiplierService.totalExtra(uuid));
+        return true;
+    }
+
+    public long currentUltaPrice(UUID uuid) {
+        long purchases = multiplierService.active(uuid).stream()
+                .filter(e -> e.source().equals("ulta"))
+                .count();
+        return (long) (cfg.ultaBasePrice() * Math.pow(cfg.ultaPriceScale(), purchases));
+    }
+}
+
+package io.reallmerry.rstudio.loader.core;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.lettuce.core.pubsub.RedisPubSubAdapter;
+import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+
+import java.util.UUID;
+
+public final class SyncService {
+
+    private static final String CHANNEL = "rstudio:buyer:sync";
+
+    private final StatefulRedisPubSubConnection<String, String> pubSub;
+    private final PlayerCache                                  playerCache;
+    private final CoefficientEngine                            coeffEngine;
+    private final String                                       serverId;
+
+    public SyncService(StatefulRedisPubSubConnection<String, String> pubSub,
+                       PlayerCache playerCache, CoefficientEngine coeffEngine, String serverId) {
+        this.pubSub      = pubSub;
+        this.playerCache = playerCache;
+        this.coeffEngine = coeffEngine;
+        this.serverId    = serverId;
+    }
+
+    public void subscribe() {
+        pubSub.addListener(new RedisPubSubAdapter<String, String>() {
+            @Override
+            public void message(String channel, String message) { handle(message); }
+        });
+        pubSub.async().subscribe(CHANNEL);
+    }
+
+    public void publishSellStat(String materialName) {
+        var p = new JsonObject();
+        p.addProperty("type",     "SELL_STAT");
+        p.addProperty("server",   serverId);
+        p.addProperty("material", materialName);
+        pubSub.async().publish(CHANNEL, p.toString());
+    }
+
+    public void publishMultiplierUpdate(String uuidStr, double total) {
+        var p = new JsonObject();
+        p.addProperty("type",   "MULTIPLIER_UPDATE");
+        p.addProperty("server", serverId);
+        p.addProperty("uuid",   uuidStr);
+        p.addProperty("value",  total);
+        pubSub.async().publish(CHANNEL, p.toString());
+    }
+
+    private void handle(String raw) {
+        var json = JsonParser.parseString(raw).getAsJsonObject();
+        if (serverId.equals(json.get("server").getAsString())) return;
+
+        switch (json.get("type").getAsString()) {
+            case "SELL_STAT" -> coeffEngine.updateFromSync(
+                    json.get("material").getAsString(),
+                    json.has("count") ? json.get("count").getAsLong() : 1
+            );
+            case "MULTIPLIER_UPDATE" -> {
+                var data = playerCache.get(UUID.fromString(json.get("uuid").getAsString()));
+                if (data != null) data.setCachedMultiplierTotal(json.get("value").getAsDouble());
+            }
+        }
+    }
+}
+package io.reallmerry.rstudio.loader.data;
+
+import com.zaxxer.hikari.HikariDataSource;
+
+import java.sql.SQLException;
+
+public final class DatabaseSchema {
+
+    private final HikariDataSource ds;
+
+    public DatabaseSchema(HikariDataSource ds) { this.ds = ds; }
+
+    public void createTables() {
+        try (var conn = ds.getConnection(); var st = conn.createStatement()) {
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS buyer_players (
+                    uuid           VARCHAR(36) PRIMARY KEY,
+                    points         BIGINT NOT NULL DEFAULT 0,
+                    category_stats JSON NOT NULL DEFAULT ('{}'),
+                    settings       JSON NOT NULL DEFAULT ('{}'),
+                    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS buyer_sell_stats (
+                    material   VARCHAR(64) PRIMARY KEY,
+                    sell_count BIGINT NOT NULL DEFAULT 0,
+                    reset_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS buyer_multipliers (
+                    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    uuid       VARCHAR(36) NOT NULL,
+                    source     VARCHAR(64) NOT NULL,
+                    value      DOUBLE NOT NULL,
+                    expires_at TIMESTAMP NULL,
+                    UNIQUE KEY uniq_uuid_source (uuid, source),
+                    INDEX idx_uuid (uuid)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to initialize database schema", e);
+        }
+    }
+}
+package io.reallmerry.rstudio.loader.data;
+
+import com.zaxxer.hikari.HikariDataSource;
+import io.reallmerry.rstudio.loader.domain.MultiplierEntry;
+
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+public final class MultiplierRepository {
+
+    private final HikariDataSource ds;
+
+    public MultiplierRepository(HikariDataSource ds) { this.ds = ds; }
+
+    public List<MultiplierEntry> findActive(UUID uuid) throws SQLException {
+        try (var conn = ds.getConnection();
+             var ps   = conn.prepareStatement(
+                     "SELECT uuid, source, value, expires_at FROM buyer_multipliers WHERE uuid = ? AND (expires_at IS NULL OR expires_at > NOW())")) {
+            ps.setString(1, uuid.toString());
+            var rs   = ps.executeQuery();
+            var list = new ArrayList<MultiplierEntry>();
+            while (rs.next()) {
+                var ts        = rs.getTimestamp("expires_at");
+                Instant expiry = ts != null ? ts.toInstant() : null;
+                list.add(new MultiplierEntry(uuid, rs.getString("source"), rs.getDouble("value"), expiry));
+            }
+            return list;
+        }
+    }
+
+    public void save(MultiplierEntry entry) throws SQLException {
+        try (var conn = ds.getConnection();
+             var ps   = conn.prepareStatement("""
+                INSERT INTO buyer_multipliers (uuid, source, value, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE value = VALUES(value), expires_at = VALUES(expires_at)
+                """)) {
+            ps.setString(   1, entry.uuid().toString());
+            ps.setString(   2, entry.source());
+            ps.setDouble(   3, entry.value());
+            ps.setTimestamp(4, entry.expiresAt() != null ? Timestamp.from(entry.expiresAt()) : null);
+            ps.executeUpdate();
+        }
+    }
+
+    public void delete(UUID uuid, String source) throws SQLException {
+        try (var conn = ds.getConnection();
+             var ps   = conn.prepareStatement(
+                     "DELETE FROM buyer_multipliers WHERE uuid = ? AND source = ?")) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, source);
+            ps.executeUpdate();
+        }
+    }
+}
+
+package io.reallmerry.rstudio.loader.data;
+
+import io.reallmerry.rstudio.loader.domain.MultiplierEntry;
+import io.reallmerry.rstudio.loader.domain.PlayerData;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+/**
+ * In-memory кэш данных онлайн-игроков.
+ * Все методы thread-safe — Scheduler может вызывать из async-задач.
+ */
+public final class PlayerCache {
+
+    private final Map<UUID, PlayerData>             loaded     = new ConcurrentHashMap<>();
+    private final Set<UUID>                          dirty      = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Map<UUID, List<MultiplierEntry>>  multipliers = new ConcurrentHashMap<>();
+
+    public void      put(UUID uuid, PlayerData data)    { loaded.put(uuid, data); }
+    public PlayerData get(UUID uuid)                    { return loaded.get(uuid); }
+    public void      remove(UUID uuid)                  { loaded.remove(uuid); dirty.remove(uuid); multipliers.remove(uuid); }
+    public void      markDirty(UUID uuid)               { dirty.add(uuid); }
+    public void      clearDirty(UUID uuid)              { dirty.remove(uuid); }
+
+    public List<PlayerData> dirtyEntries() {
+        return dirty.stream().map(loaded::get).filter(Objects::nonNull).toList();
+    }
+
+    public List<MultiplierEntry> multipliers(UUID uuid) {
+        return multipliers.getOrDefault(uuid, List.of());
+    }
+
+    public void loadMultipliers(UUID uuid, List<MultiplierEntry> entries) {
+        multipliers.put(uuid, new CopyOnWriteArrayList<>(entries));
+    }
+
+    public void addMultiplier(UUID uuid, MultiplierEntry entry) {
+        multipliers.computeIfAbsent(uuid, u -> new CopyOnWriteArrayList<>()).add(entry);
+    }
+
+    public void removeMultiplier(UUID uuid, String source) {
+        var list = multipliers.get(uuid);
+        if (list != null) list.removeIf(e -> e.source().equals(source));
+    }
+}
+package io.reallmerry.rstudio.loader.data;
+
+import com.zaxxer.hikari.HikariDataSource;
+import io.reallmerry.rstudio.loader.domain.PlayerData;
+
+import java.sql.SQLException;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.logging.Logger;
+
+public final class PlayerRepository {
+
+    private static final Logger LOG = Logger.getLogger("RStudioBuyer");
+    private final HikariDataSource ds;
+
+    public PlayerRepository(HikariDataSource ds) { this.ds = ds; }
+
+    public Optional<PlayerData> find(UUID uuid) throws SQLException {
+        try (var conn = ds.getConnection();
+             var ps   = conn.prepareStatement(
+                     "SELECT uuid, points, category_stats, settings FROM buyer_players WHERE uuid = ?")) {
+            ps.setString(1, uuid.toString());
+            var rs = ps.executeQuery();
+            if (!rs.next()) return Optional.empty();
+            return Optional.of(PlayerData.fromResultSet(rs));
+        }
+    }
+
+    public void upsert(PlayerData data) throws SQLException {
+        try (var conn = ds.getConnection();
+             var ps   = conn.prepareStatement("""
+                INSERT INTO buyer_players (uuid, points, category_stats, settings)
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    points         = VALUES(points),
+                    category_stats = VALUES(category_stats),
+                    settings       = VALUES(settings)
+                """)) {
+            ps.setString(1, data.uuid().toString());
+            ps.setLong(  2, data.points());
+            ps.setString(3, data.categoryStatsJson());
+            ps.setString(4, data.settingsJson());
+            ps.executeUpdate();
+        }
+    }
+
+    public void flushDirty(PlayerCache cache) {
+        for (var data : cache.dirtyEntries()) {
+            try {
+                upsert(data);
+                cache.clearDirty(data.uuid());
+            } catch (SQLException e) {
+                LOG.severe("Flush failed for " + data.uuid() + ": " + e.getMessage());
+                // Не очищаем dirty — попробуем на следующем флаше
+            }
+        }
+    }
+}
+package io.reallmerry.rstudio.loader.data;
+
+import com.zaxxer.hikari.HikariDataSource;
+import io.lettuce.core.api.StatefulRedisConnection;
+
+import java.sql.SQLException;
+import java.util.logging.Logger;
+
+public final class SellStatRepository {
+
+    private static final Logger LOG        = Logger.getLogger("RStudioBuyer");
+    private static final String KEY_PREFIX = "buyer:sellcount:";
+
+    private final HikariDataSource ds;
+
+    public SellStatRepository(HikariDataSource ds) { this.ds = ds; }
+
+    public void increment(StatefulRedisConnection<String, String> redis, String materialName) {
+        redis.async().incr(KEY_PREFIX + materialName);
+    }
+
+    // Читает все sell_count из Redis и сохраняет в MySQL (вызывается по расписанию)
+    public void flushToMysql(StatefulRedisConnection<String, String> redis) {
+        var keys = redis.sync().keys(KEY_PREFIX + "*");
+        if (keys.isEmpty()) return;
+
+        try (var conn = ds.getConnection()) {
+            conn.setAutoCommit(false);
+            try (var ps = conn.prepareStatement("""
+                INSERT INTO buyer_sell_stats (material, sell_count)
+                VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE sell_count = VALUES(sell_count)
+                """)) {
+                for (var key : keys) {
+                    var raw = redis.sync().get(key);
+                    if (raw == null) continue;
+                    ps.setString(1, key.substring(KEY_PREFIX.length()));
+                    ps.setLong(  2, Long.parseLong(raw));
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            LOG.severe("SellStat flush failed: " + e.getMessage());
+        }
+    }
+
+    public void resetAll(StatefulRedisConnection<String, String> redis) {
+        var keys = redis.sync().keys(KEY_PREFIX + "*");
+        if (!keys.isEmpty()) redis.sync().del(keys.toArray(String[]::new));
+        try (var conn = ds.getConnection(); var st = conn.createStatement()) {
+            st.execute("UPDATE buyer_sell_stats SET sell_count = 0, reset_at = NOW()");
+        } catch (SQLException e) {
+            LOG.severe("SellStat reset failed: " + e.getMessage());
+        }
+    }
+}
+package io.reallmerry.rstudio.loader.domain;
+
+import org.bukkit.Material;
+
+public record BuyerItem(
+        Material   material,
+        String     displayName,
+        double     basePrice,
+        ItemCategory category
+) {}
+package io.reallmerry.rstudio.loader.domain;
+
+public enum ItemCategory {
+    MINE("Шахта"),
+    MOBS("Мобы"),
+    PLANTS("Растительность"),
+    BLOCKS("Блоки"),
+    MISC("Разное");
+
+    public final String displayName;
+    ItemCategory(String displayName) { this.displayName = displayName; }
+}package io.reallmerry.rstudio.loader.domain;
+
+import java.time.Instant;
+import java.util.UUID;
+
+public record MultiplierEntry(
+        UUID    uuid,
+        String  source,     // "ulta", "booster", "external:pluginName" и т.п.
+        double  value,      // 0.1 = +10%
+        Instant expiresAt   // null = постоянный
+) {}
+
+package io.reallmerry.rstudio.loader.domain;
+
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.*;
+
+/**
+ * Изменяемое состояние игрока, живёт только в памяти пока игрок онлайн.
+ * Сериализуется в MySQL через JSON-поля. Не record — нужна мутабельность.
+ */
+public final class PlayerData {
+
+    private static final Gson GSON = new Gson();
+
+    private final UUID         uuid;
+    private long               points;
+    private PlayerSettings     settings;
+    private final Map<ItemCategory, Long> categoryPoints;
+    private double             cachedMultiplierTotal;
+
+    private PlayerData(UUID uuid, long points, PlayerSettings settings, Map<ItemCategory, Long> categoryPoints) {
+        this.uuid            = uuid;
+        this.points          = points;
+        this.settings        = settings;
+        this.categoryPoints  = new EnumMap<>(categoryPoints);
+    }
+
+    public static PlayerData fresh(UUID uuid) {
+        return new PlayerData(uuid, 0, PlayerSettings.defaults(), new EnumMap<>(ItemCategory.class));
+    }
+
+    public static PlayerData fromResultSet(ResultSet rs) throws SQLException {
+        Map<String, Long> uuid           = UUID.fromString(rs.getString("uuid"));
+        long points        = rs.getLong("points");
+        Map<String, Long> categoryMap    = GSON.fromJson(rs.getString("category_stats"),
+                new TypeToken<Map<String, Long>>(){}.getType());
+        Map<String, Long> settingsObj    = GSON.fromJson(rs.getString("settings"), PlayerSettings.class);
+
+        Map<ItemCategory, Long> catPoints = new EnumMap<>(ItemCategory.class);
+        if (categoryMap != null) {
+            categoryMap.forEach((k, v) -> {
+                try { catPoints.put(ItemCategory.valueOf(k), v); } catch (IllegalArgumentException ignored) {}
+            });
+        }
+        return new PlayerData(uuid, points, settingsObj != null ? settingsObj : PlayerSettings.defaults(), catPoints);
+    }
+
+    public void addPoints(long amount) {
+        points = Math.max(0, points + amount);
+    }
+
+    public void addCategoryPoints(Map<ItemCategory, Long> counts) {
+        counts.forEach((cat, count) -> categoryPoints.merge(cat, count, Long::sum));
+    }
+
+    public ItemCategory topCategory() {
+        return categoryPoints.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(ItemCategory.MISC);
+    }
+
+    public void updateSettings(PlayerSettings newSettings) {
+        this.settings = newSettings;
+    }
+
+    public void setCachedMultiplierTotal(double value) {
+        this.cachedMultiplierTotal = value;
+    }
+
+    public UUID         uuid()                  { return uuid; }
+    public long         points()                { return points; }
+    public PlayerSettings settings()            { return settings; }
+    public double       cachedMultiplierTotal() { return cachedMultiplierTotal; }
+
+    // Для сериализации в MySQL
+    public String categoryStatsJson() {
+        Map<String, Long> stringMap = new LinkedHashMap<>();
+        categoryPoints.forEach((k, v) -> stringMap.put(k.name(), v));
+        return GSON.toJson(stringMap);
+    }
+
+    public String settingsJson() {
+        return GSON.toJson(settings);
+    }
+}
+package io.reallmerry.rstudio.loader.domain;
+
+public record PlayerSettings(
+        boolean quickSell,        // быстрая продажа до попадания в инвентарь
+        boolean ignoreHotbar,     // не продавать из хотбара
+        boolean ignoreMainHand,   // не продавать из руки
+        boolean priceTooltip,     // показывать цену в lore предмета
+        boolean autoSellMessages  // сообщения в чате при авто-продаже
+) {
+    public static PlayerSettings defaults() {
+        return new PlayerSettings(false, false, false, false, true);
+    }
+}
+
+package io.reallmerry.rstudio.loader.domain;
+
+import java.util.Map;
+
+public record SellResult(double moneyEarned, long pointsEarned, Map<ItemCategory, Long> sold) {
+
+    public static SellResult empty() {
+        return new SellResult(0, 0, Map.of());
+    }
+
+    public boolean isEmpty() { return moneyEarned == 0; }
+}
+package io.reallmerry.rstudio.loader.event;
+
+import io.reallmerry.rstudio.loader.core.AutoSellService;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityPickupItemEvent;
+
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+public final class AutoSell implements Listener {
+
+    private final AutoSellService                autoSellService;
+    private final PlayerCache                   playerCache;
+    private final MiniMessage                   mm       = MiniMessage.miniMessage();
+    private final Map<UUID, Long>               cooldown = new ConcurrentHashMap<>();
+
+    public AutoSell(AutoSellService autoSellService, PlayerCache playerCache) {
+        this.autoSellService = autoSellService;
+        this.playerCache     = playerCache;
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPickup(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player player)) return;
+
+        var data = playerCache.get(player.getUniqueId());
+        if (data == null || !data.settings().quickSell()) return;
+
+        var item = event.getItem().getItemStack();
+        if (!autoSellService.canSell(player, item.getType())) return;
+
+        long now  = System.currentTimeMillis();
+        long last = cooldown.getOrDefault(player.getUniqueId(), 0L);
+        if (now - last < 1000) return;
+        cooldown.put(player.getUniqueId(), now);
+
+        event.setCancelled(true);
+        var result = autoSellService.quickSell(player, item);
+        if (result.isEmpty()) return;
+
+        event.getItem().remove();
+
+        if (data.settings().autoSellMessages()) {
+            player.sendMessage(mm.deserialize(
+                    "<dark_gray>[Авто] <gray>+" + String.format("%.2f", result.moneyEarned()) + " монеток"
+            ));
+        }
+    }
+}
+package io.reallmerry.rstudio.loader.event;
+
+import io.reallmerry.rstudio.loader.core.RankMultiplierProvider;
+import io.reallmerry.rstudio.loader.data.MultiplierRepository;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.data.PlayerRepository;
+import io.reallmerry.rstudio.loader.domain.PlayerData;
+import org.bukkit.Bukkit;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.java.JavaPlugin;
+
+public final class PlayerSession implements Listener {
+
+    private final PlayerRepository      playerRepo;
+    private final PlayerCache           playerCache;
+    private final MultiplierRepository  multiplierRepo;
+    private final RankMultiplierProvider rankProvider;
+    private final JavaPlugin            plugin;
+
+    public PlayerSession(PlayerRepository playerRepo, PlayerCache playerCache,
+                         MultiplierRepository multiplierRepo, RankMultiplierProvider rankProvider,
+                         JavaPlugin plugin) {
+        this.playerRepo     = playerRepo;
+        this.playerCache    = playerCache;
+        this.multiplierRepo = multiplierRepo;
+        this.rankProvider   = rankProvider;
+        this.plugin         = plugin;
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent event) {
+        var player = event.getPlayer();
+        var uuid   = player.getUniqueId();
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                var data        = playerRepo.find(uuid).orElse(PlayerData.fresh(uuid));
+                var multipliers = multiplierRepo.findActive(uuid);
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    playerCache.put(uuid, data);
+                    playerCache.loadMultipliers(uuid, multipliers);
+                });
+            } catch (Exception e) {
+                plugin.getLogger().severe("Failed to load data for " + uuid + ": " + e.getMessage());
+            }
+        });
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        var uuid = event.getPlayer().getUniqueId();
+        var data = playerCache.get(uuid);
+        if (data == null) return;
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                playerRepo.upsert(data);
+            } catch (Exception e) {
+                plugin.getLogger().severe("Failed to save data for " + uuid + ": " + e.getMessage());
+            } finally {
+                playerCache.remove(uuid);
+            }
+        });
+    }
+}
+package io.reallmerry.rstudio.loader.event;
+
+import io.reallmerry.rstudio.loader.config.ItemRegistry;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerItemHeldEvent;
+
+import java.util.ArrayList;
+
+public final class PriceTooltip implements Listener {
+
+    private final ItemRegistry itemRegistry;
+    private final PlayerCache  playerCache;
+    private final MiniMessage  mm = MiniMessage.miniMessage();
+
+    public PriceTooltip(ItemRegistry itemRegistry, PlayerCache playerCache) {
+        this.itemRegistry = itemRegistry;
+        this.playerCache  = playerCache;
+    }
+
+    @EventHandler
+    public void onHeld(PlayerItemHeldEvent event) {
+        var player = event.getPlayer();
+        var data   = playerCache.get(player.getUniqueId());
+        if (data == null || !data.settings().priceTooltip()) return;
+
+        var item = player.getInventory().getItem(event.getNewSlot());
+        if (item == null) return;
+
+        var buyerItem = itemRegistry.find(item.getType());
+        if (buyerItem.isEmpty()) return;
+
+        var  bi      = buyerItem.get();
+        var  clone   = item.clone();
+        var  meta    = clone.getItemMeta();
+        ArrayList<Component> lore    = meta.lore() != null ? new ArrayList<>(meta.lore()) : new ArrayList<>();
+
+        lore.add(mm.deserialize("<gray>Скупщик: <gold>" + String.format("%.0f", bi.basePrice()) + " монет/шт"));
+        meta.lore(lore);
+        clone.setItemMeta(meta);
+
+        // Показываем клон в руке только визуально — не меняем реальный предмет
+        player.sendMessage(mm.deserialize(
+                "<dark_gray>[Цена] <gray>" + bi.displayName() + ": <gold>"
+                        + String.format("%.0f", bi.basePrice()) + " монет/шт"
+        ));
+    }
+}
+package io.reallmerry.rstudio.loader.gui;
+
+public class AutoSellGui {
+}
+package io.reallmerry.rstudio.loader.gui;
+
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
+
+// Идентифицирует все GUI скупщика без сравнения title
+public final class BuyerHolder implements InventoryHolder {
+
+    public enum Type { MAIN, AUTO, ITEMS, SETTINGS, SHOP }
+
+    private final Type type;
+
+    public BuyerHolder(Type type) { this.type = type; }
+
+    public Type type() { return type; }
+
+    @Override public Inventory getInventory() { return null; }
+}
+package io.reallmerry.rstudio.loader.gui;
+
+import io.reallmerry.rstudio.loader.config.ItemRegistry;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Material;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.List;
+
+public final class GuiFactory {
+
+    private final ItemRegistry itemRegistry;
+    private final MiniMessage  mm = MiniMessage.miniMessage();
+
+    public GuiFactory(ItemRegistry itemRegistry) { this.itemRegistry = itemRegistry; }
+
+    public ItemStack multiplierInfo(double base, double extra, long points) {
+        var item = new ItemStack(Material.GOLD_NUGGET);
+        var meta = item.getItemMeta();
+        meta.displayName(mm.deserialize("<yellow>Множитель монеток"));
+        meta.lore(List.of(
+                mm.deserialize("<gray>Базовый: <white>x" + String.format("%.2f", base)),
+                mm.deserialize("<gray>Бонусы: <green>+" + String.format("%.0f%%", extra * 100)),
+                mm.deserialize("<gray>Очки: <aqua>" + points)
+        ));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack sellButton() {
+        var item = new ItemStack(Material.LIME_DYE);
+        var meta = item.getItemMeta();
+        meta.displayName(mm.deserialize("<green><bold>Продать всё"));
+        meta.lore(List.of(mm.deserialize("<gray>Нажмите для продажи предметов выше")));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack filler() {
+        var item = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        var meta = item.getItemMeta();
+        meta.displayName(mm.deserialize("<gray> "));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public void fillRow(Inventory inv, int from, int to) {
+        var f = filler();
+        for (int i = from; i <= to; i++) {
+            if (inv.getItem(i) == null) inv.setItem(i, f);
+        }
+    }
+}package io.reallmerry.rstudio.loader.gui;
+
+public class ItemsGui {
+}
+
+package io.reallmerry.rstudio.loader.gui;
+
+import io.reallmerry.rstudio.loader.core.MultiplierService;
+import io.reallmerry.rstudio.loader.core.RankMultiplierProvider;
+import io.reallmerry.rstudio.loader.core.SellService;
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.ArrayList;
+
+public final class MainGui implements Listener {
+
+    private final SellService           sellService;
+    private final PlayerCache           playerCache;
+    private final RankMultiplierProvider rankProvider;
+    private final MultiplierService      multiplierService;
+    private final GuiFactory            factory;
+    private final MiniMessage           mm = MiniMessage.miniMessage();
+
+    public MainGui(SellService sellService, PlayerCache playerCache,
+                   RankMultiplierProvider rankProvider, MultiplierService multiplierService,
+                   GuiFactory factory) {
+        this.sellService       = sellService;
+        this.playerCache       = playerCache;
+        this.rankProvider      = rankProvider;
+        this.multiplierService = multiplierService;
+        this.factory           = factory;
+    }
+
+    public void open(Player player) {
+        var holder = new BuyerHolder(BuyerHolder.Type.MAIN);
+        var inv    = Bukkit.createInventory(holder, 54, mm.deserialize("<gray>* <white>Скупщик"));
+        var data   = playerCache.get(player.getUniqueId());
+
+        inv.setItem(45, factory.multiplierInfo(
+                rankProvider.multiplierFor(player),
+                multiplierService.totalExtra(player.getUniqueId()),
+                data.points()
+        ));
+        inv.setItem(49, factory.sellButton());
+        factory.fillRow(inv, 45, 53);
+        player.openInventory(inv);
+    }
+
+    @EventHandler
+    public void onClick(InventoryClickEvent event) {
+        if (!(event.getInventory().getHolder() instanceof BuyerHolder h)
+                || h.type() != BuyerHolder.Type.MAIN) return;
+        event.setCancelled(true);
+        if (event.getRawSlot() < 45) { event.setCancelled(false); return; }
+        if (event.getRawSlot() != 49) return;
+
+        var player = (Player) event.getWhoClicked();
+        var items  = collectItems(event.getInventory());
+        if (items.isEmpty()) return;
+
+        var result = sellService.sell(player, items);
+        if (result.isEmpty()) return;
+
+        items.forEach(i -> i.setAmount(0));
+        player.sendMessage(mm.deserialize(
+                "<gray>Скупщик: <white>+" + String.format("%.2f", result.moneyEarned())
+                        + " <gray>монеток | <yellow>+" + result.pointsEarned() + " очков"
+        ));
+        open(player);
+    }
+
+    private java.util.List<ItemStack> collectItems(Inventory inv) {
+        var list = new ArrayList<ItemStack>();
+        for (int s = 0; s < 45; s++) {
+            var item = inv.getItem(s);
+            if (item != null && item.getType() != Material.AIR) list.add(item);
+        }
+        return list;
+    }
+}
+
+package io.reallmerry.rstudio.loader.gui;
+
+import io.reallmerry.rstudio.loader.data.PlayerCache;
+import io.reallmerry.rstudio.loader.domain.PlayerSettings;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.List;
+
+public final class SettingsGui implements Listener {
+
+    private final PlayerCache playerCache;
+    private final GuiFactory  factory;
+    private final MiniMessage mm = MiniMessage.miniMessage();
+
+    public SettingsGui(PlayerCache playerCache, GuiFactory factory) {
+        this.playerCache = playerCache;
+        this.factory     = factory;
+    }
+
+    public void open(Player player) {
+        var holder   = new BuyerHolder(BuyerHolder.Type.SETTINGS);
+        var inv      = Bukkit.createInventory(holder, 27, mm.deserialize("<gray>* <white>Настройки скупщика"));
+        var settings = playerCache.get(player.getUniqueId()).settings();
+
+        inv.setItem(10, settingItem(Material.FEATHER,         "Быстрая продажа",    settings.quickSell()));
+        inv.setItem(12, settingItem(Material.IRON_SWORD,       "Игнор хотбара",       settings.ignoreHotbar()));
+        inv.setItem(14, settingItem(Material.BLAZE_ROD,        "Игнор руки",          settings.ignoreMainHand()));
+        inv.setItem(16, settingItem(Material.NAME_TAG,         "Подсказки цен",       settings.priceTooltip()));
+        inv.setItem(22, settingItem(Material.PAPER,            "Сообщения авто-продажи", settings.autoSellMessages()));
+        factory.fillRow(inv, 0, 26);
+        player.openInventory(inv);
+    }
+
+    @EventHandler
+    public void onClick(InventoryClickEvent event) {
+        if (!(event.getInventory().getHolder() instanceof BuyerHolder h)
+                || h.type() != BuyerHolder.Type.SETTINGS) return;
+        event.setCancelled(true);
+
+        var player   = (Player) event.getWhoClicked();
+        var data     = playerCache.get(player.getUniqueId());
+        var old      = data.settings();
+        var newSettings = switch (event.getRawSlot()) {
+            case 10 -> new PlayerSettings(!old.quickSell(), old.ignoreHotbar(), old.ignoreMainHand(), old.priceTooltip(), old.autoSellMessages());
+            case 12 -> new PlayerSettings(old.quickSell(), !old.ignoreHotbar(), old.ignoreMainHand(), old.priceTooltip(), old.autoSellMessages());
+            case 14 -> new PlayerSettings(old.quickSell(), old.ignoreHotbar(), !old.ignoreMainHand(), old.priceTooltip(), old.autoSellMessages());
+            case 16 -> new PlayerSettings(old.quickSell(), old.ignoreHotbar(), old.ignoreMainHand(), !old.priceTooltip(), old.autoSellMessages());
+            case 22 -> new PlayerSettings(old.quickSell(), old.ignoreHotbar(), old.ignoreMainHand(), old.priceTooltip(), !old.autoSellMessages());
+            default -> null;
+        };
+        if (newSettings == null) return;
+        data.updateSettings(newSettings);
+        playerCache.markDirty(player.getUniqueId());
+        open(player);
+    }
+
+    private ItemStack settingItem(Material mat, String name, boolean enabled) {
+        var item = new ItemStack(mat);
+        var meta = item.getItemMeta();
+        meta.displayName(mm.deserialize("<white>" + name));
+        meta.lore(List.of(mm.deserialize(enabled ? "<green>✔ Включено" : "<red>✘ Выключено")));
+        item.setItemMeta(meta);
+        return item;
+    }
+}
+
+package io.reallmerry.rstudio.loader.gui;
+
+public class ShopGui {
+}
+
+package io.reallmerry.rstudio.loader;
+
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
+import io.reallmerry.rstudio.loader.api.BuyerApi;
+import io.reallmerry.rstudio.loader.api.BuyerApiImpl;
+import io.reallmerry.rstudio.loader.command.Buyer;
+import io.reallmerry.rstudio.loader.config.*;
+import io.reallmerry.rstudio.loader.core.*;
+import io.reallmerry.rstudio.loader.data.*;
+import io.reallmerry.rstudio.loader.event.*;
+import io.reallmerry.rstudio.loader.gui.GuiFactory;
+import net.milkbowl.vault.economy.Economy;
+import org.bukkit.Material;
+import org.bukkit.plugin.ServicePriority;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
+
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+
+public final class BuyerPlugin extends JavaPlugin {
+
+    private HikariDataSource                             dataSource;
+    private RedisClient                                  redisClient;
+    private StatefulRedisConnection<String, String>     redisConn;
+    private StatefulRedisPubSubConnection<String, String> pubSubConn;
+    private PlayerCache                                  playerCache;
+
+    @Override
+    public void onEnable() {
+        saveDefaultConfig();
+        var cfg          = loadPluginConfig();
+        var translations = loadTranslations();
+        var economy      = requireEconomy();
+
+        dataSource = buildDataSource(cfg.database());
+        redisClient  = RedisClient.create(RedisURI.create(cfg.redis().uri()));
+        redisConn    = redisClient.connect();
+        pubSubConn   = redisClient.connectPubSub();
+
+        new DatabaseSchema(dataSource).createTables();
+
+        var itemRegistry    = ItemRegistry.load(this, translations);
+        var playerRepo      = new PlayerRepository(dataSource);
+        var sellStatRepo    = new SellStatRepository(dataSource);
+        var multiplierRepo  = new MultiplierRepository(dataSource);
+        playerCache         = new PlayerCache();
+
+        var rankProvider      = new RankMultiplierProvider(cfg.ranks());
+        var coeffEngine       = new CoefficientEngine(redisConn, cfg.coefficient());
+        var multiplierService = new MultiplierService(multiplierRepo, playerCache);
+        var syncService       = new SyncService(pubSubConn, playerCache, coeffEngine, cfg.serverId());
+        var sellService       = new SellService(economy, itemRegistry, playerCache,
+                sellStatRepo, redisConn, coeffEngine, rankProvider, multiplierService, syncService, cfg);
+        var autoSellService   = new AutoSellService(sellService, itemRegistry, playerCache);
+        var shopService       = new ShopService(playerRepo, playerCache, multiplierService, syncService, cfg.shop());
+        var factory           = new GuiFactory(itemRegistry);
+
+        syncService.subscribe();
+        scheduleFlush(playerRepo, sellStatRepo, cfg.flushIntervalTicks());
+
+        var pm = getServer().getPluginManager();
+        pm.registerEvents(new PlayerSession(playerRepo, playerCache, multiplierRepo, rankProvider, this), this);
+        pm.registerEvents(new AutoSell(autoSellService, playerCache), this);
+        pm.registerEvents(new PriceTooltip(itemRegistry, playerCache), this);
+
+        var buyerCmd = new Buyer(sellService, autoSellService, shopService, multiplierService,
+                rankProvider, itemRegistry, playerCache, factory, this);
+        getCommand("buyer").setExecutor(buyerCmd);
+        getCommand("buyer").setTabCompleter(buyerCmd);
+
+        var api = new BuyerApiImpl(multiplierService, playerCache);
+        getServer().getServicesManager().register(BuyerApi.class, api, this, ServicePriority.Normal);
+    }
+
+    @Override
+    public void onDisable() {
+        getServer().getScheduler().cancelTasks(this);
+        if (redisConn   != null) redisConn.close();
+        if (pubSubConn  != null) pubSubConn.close();
+        if (redisClient  != null) redisClient.shutdown();
+        if (dataSource   != null) dataSource.close();
+    }
+
+    private PluginConfig loadPluginConfig() {
+        saveResource("config.yml", false);
+        var path   = getDataFolder().toPath().resolve("config.yml");
+        var loader = YamlConfigurationLoader.builder().path(path).build();
+        try {
+            return loader.load().get(PluginConfig.class);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load config.yml", e);
+        }
+    }
+
+    private Map<Material, String> loadTranslations() {
+        var stream = getResource("translations.json");
+        if (stream == null) return Map.of();
+        try (var reader = new InputStreamReader(stream, StandardCharsets.UTF_8)) {
+            Map<String, String> raw = new Gson().fromJson(reader,
+                    new TypeToken<Map<String, String>>(){}.getType());
+            var result = new java.util.EnumMap<Material, String>(Material.class);
+            raw.forEach((k, v) -> {
+                var mat = Material.matchMaterial(k);
+                if (mat != null) result.put(mat, v);
+            });
+            return result;
+        } catch (IOException e) {
+            getLogger().warning("translations.json read failed: " + e.getMessage());
+            return Map.of();
+        }
+    }
+
+    private Economy requireEconomy() {
+        var rsp = getServer().getServicesManager().getRegistration(Economy.class);
+        if (rsp == null)
+            throw new IllegalStateException("Vault Economy not found — установите экономику-плагин");
+        return rsp.getProvider();
+    }
+
+    private HikariDataSource buildDataSource(DatabaseConfig db) {
+        var hc = new HikariConfig();
+        hc.setJdbcUrl("jdbc:mysql://" + db.host() + ":" + db.port() + "/" + db.database()
+                + "?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8");
+        hc.setUsername(db.username());
+        hc.setPassword(db.password());
+        hc.setMaximumPoolSize(10);
+        hc.setMinimumIdle(2);
+        hc.setConnectionTimeout(10_000);
+        hc.setPoolName("RStudioBuyer");
+        return new HikariDataSource(hc);
+    }
+
+    private void scheduleFlush(PlayerRepository playerRepo, SellStatRepository sellStatRepo, long ticks) {
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            playerRepo.flushDirty(playerCache);
+            sellStatRepo.flushToMysql(redisConn);
+        }, ticks, ticks);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
