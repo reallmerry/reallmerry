@@ -1,4 +1,3 @@
-# Все проекты на обновлении и поэтому временно скрыты :(
 
 <div align="center">
   <img src="https://github.com/reallmerry/reallmerry/blob/main/photo_2024-10-31_23-34-59.jpg?raw=true" width="1250" height="300" alt="Banner" style="border-radius: 8px; margin-bottom: 24px; object-fit: cover;" />
