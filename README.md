@@ -4,11 +4,11 @@
 
 # README RU | [README EN](https://github.com/reallmerry/reallmerry/blob/main/README_EN.md)
 
-<h1 align="center">Привет, я Степан 👋</h1>
+<h1 align="center">Привет, я reallmerry 👋</h1>
 <h3 align="center">Разработчик плагинов и системный администратор Minecraft · 4 года опыта</h3>
 
 <p align="center">
-Пишу плагины на Java под Paper/Spigot (1.16–1.21), настраиваю сервера под ключ.<br/>
+Пишу плагины на Java под Paper/Spigot (1.16–26.1), настраиваю сервера под ключ.<br/>
 Кастомные системы, экономика, оптимизация, поддержка серверов.
 </p>
 
