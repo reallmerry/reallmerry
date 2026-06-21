@@ -2,7 +2,7 @@
   <img src="https://github.com/reallmerry/reallmerry/blob/main/photo_2024-10-31_23-35-06.jpg?raw=true" width="1250" height="300" alt="Banner" style="border-radius: 8px; margin-bottom: 24px; object-fit: cover;" />
 </div>
 
-<h1 align="center">Hi, I'm Stepan 👋</h1>
+<h1 align="center">Hi, I'm reallmerry 👋</h1>
 <h3 align="center">Minecraft Plugin Developer & System Administrator · 4 years of experience</h3>
 
 <p align="center">
