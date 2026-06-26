@@ -276,7 +276,7 @@ ipv4_info() {
     country="$(${ip_check_cmd} http://ipinfo.io/country)"
     region="$(${ip_check_cmd} http://ipinfo.io/region)"
     if [[ -n "${org}" ]]; then
-        echo " Organization       : $(_blue "reallmerry Cloud")"
+        echo " Organization       : $(_blue "reallmerry cloud")"
     fi
     if [[ -n "${city}" && -n "${country}" ]]; then
         echo " Location           : $(_blue "${city} / ${country}")"
